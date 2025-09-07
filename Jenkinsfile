@@ -90,11 +90,30 @@ pipeline {
         withCredentials([usernamePassword(credentialsId: 'dockerhub-creds', usernameVariable: 'DH_USER', passwordVariable: 'DH_PASS')]) {
           withAWS(credentials: 'aws-creds', region: "${params.AWS_REGION}") {
             sh '''
+              set -e
               export KUBECONFIG="$WORKSPACE/.kube/config"
               export DOCKERHUB_USER="$DH_USER"
               export IMAGE_TAG="${IMAGE_TAG}"
+
+              # Create an isolated Python env for Ansible's k8s module
+              python3 -m venv "$WORKSPACE/.ansible-venv"
+              . "$WORKSPACE/.ansible-venv/bin/activate"
+              pip install --upgrade pip
+              # Kubernetes Python client + openshift helper (required by kubernetes.core)
+              pip install "kubernetes" "openshift" "requests"
+
+              # Ensure k8s Ansible collection is present
               ansible-galaxy collection install kubernetes.core --force
-              ansible-playbook -i ansible/inventory.ini ansible/deploy.yaml
+
+              # Sanity check (optional)
+              python - <<'PY'
+    import sys; import kubernetes; print("kubernetes OK", sys.version)
+    PY
+
+              # Run the playbook, telling Ansible which Python to use
+              ansible-playbook -e "ansible_python_interpreter=$WORKSPACE/.ansible-venv/bin/python" \
+                -i ansible/inventory.ini ansible/deploy.yaml
+
               kubectl -n micro get deploy,svc,pod
             '''
           }
