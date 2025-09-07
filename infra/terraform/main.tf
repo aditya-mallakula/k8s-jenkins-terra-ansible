@@ -9,6 +9,8 @@ provider "aws" {
   region = var.region
 }
 
+data "aws_caller_identity" "current" {}
+
 module "vpc" {
   source  = "terraform-aws-modules/vpc/aws"
   version = "~> 5.8"
@@ -30,12 +32,13 @@ module "eks" {
   cluster_name    = var.cluster_name
   cluster_version = "1.29"
 
-  subnet_ids      = module.vpc.private_subnets
-  vpc_id          = module.vpc.vpc_id
+  subnet_ids = module.vpc.private_subnets
+  vpc_id     = module.vpc.vpc_id
 
-  cluster_endpoint_public_access  = true
-  cluster_endpoint_private_access = false
-  cluster_endpoint_public_access_cidrs = ["0.0.0.0/0"]  # or restrict to your IP/32
+  # public API so Jenkins (outside VPC) can reach it
+  cluster_endpoint_public_access           = true
+  cluster_endpoint_private_access          = false
+  cluster_endpoint_public_access_cidrs     = ["0.0.0.0/0"] # TIP: later, lock this to your IP/32
 
   eks_managed_node_groups = {
     ng1 = {
@@ -46,17 +49,17 @@ module "eks" {
       subnet_ids     = module.vpc.private_subnets
     }
   }
-  
-  # Make sure creator gets admin
+
+  # give the creator admin
   enable_cluster_creator_admin_permissions = true
 
-  # Explicit access entry for the Jenkins user
+  # make Jenkins/AWS principal an admin explicitly (so kubectl works)
   access_entries = {
     jenkins_admin = {
       principal_arn = data.aws_caller_identity.current.arn
       policy_associations = {
         admin = {
-          policy_arn  = "arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy"
+          policy_arn   = "arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy"
           access_scope = { type = "cluster" }
         }
       }
@@ -64,10 +67,5 @@ module "eks" {
   }
 }
 
-output "cluster_name" {
-  value = module.eks.cluster_name
-}
-
-output "cluster_endpoint" {
-  value = module.eks.cluster_endpoint
-}
+output "cluster_name"     { value = module.eks.cluster_name }
+output "cluster_endpoint" { value = module.eks.cluster_endpoint }
