@@ -46,6 +46,22 @@ module "eks" {
       subnet_ids     = module.vpc.private_subnets
     }
   }
+  
+  # Make sure creator gets admin
+  enable_cluster_creator_admin_permissions = true
+
+  # Explicit access entry for the Jenkins user
+  access_entries = {
+    jenkins_admin = {
+      principal_arn = data.aws_caller_identity.current.arn
+      policy_associations = {
+        admin = {
+          policy_arn  = "arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy"
+          access_scope = { type = "cluster" }
+        }
+      }
+    }
+  }
 }
 
 output "cluster_name" {
