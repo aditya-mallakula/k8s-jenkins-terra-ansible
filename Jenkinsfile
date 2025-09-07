@@ -95,26 +95,27 @@ pipeline {
               export DOCKERHUB_USER="$DH_USER"
               export IMAGE_TAG="${IMAGE_TAG}"
 
-              # Create an isolated Python env for Ansible's k8s module
+              # Create and use a clean Python env for Ansible's k8s module
               python3 -m venv "$WORKSPACE/.ansible-venv"
               . "$WORKSPACE/.ansible-venv/bin/activate"
               pip install --upgrade pip
-              # Kubernetes Python client + openshift helper (required by kubernetes.core)
-              pip install "kubernetes" "openshift" "requests"
+              pip install kubernetes openshift requests
 
-              # Ensure k8s Ansible collection is present
+              # Ensure Ansible k8s collection is present
               ansible-galaxy collection install kubernetes.core --force
 
-              # Sanity check (optional)
-              python - <<'PY'
-    import sys; import kubernetes; print("kubernetes OK", sys.version)
-    PY
+              # Quick sanity check (avoid heredoc indentation issues)
+              python -c "import kubernetes, sys; print('kubernetes OK', sys.version)"
 
-              # Run the playbook, telling Ansible which Python to use
-              ansible-playbook -e "ansible_python_interpreter=$WORKSPACE/.ansible-venv/bin/python" \
-                -i ansible/inventory.ini ansible/deploy.yaml
+              # Tell Ansible which Python to use and run from ansible/ so relative paths work
+              export ANSIBLE_PYTHON_INTERPRETER="$WORKSPACE/.ansible-venv/bin/python"
+              cd ansible
+              ansible-playbook -i inventory.ini deploy.yaml
+              cd -
 
+              # Show what got created
               kubectl -n micro get deploy,svc,pod
+
             '''
           }
         }
