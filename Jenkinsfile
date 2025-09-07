@@ -40,7 +40,11 @@ pipeline {
             echo "$DH_PASS" | docker login -u "$DH_USER" --password-stdin
             export DOCKERHUB_USER="$DH_USER"
             export IMAGE_TAG="${IMAGE_TAG}"
+
+            export DOCKER_DEFAULT_PLATFORM=linux/amd64
+            docker buildx create --use --name ci-builder || true
             docker compose -f docker-compose.ci.yml build --no-cache
+
           '''
         }
       }
