@@ -1,0 +1,39 @@
+---
+- name: Deploy microservices to EKS
+  hosts: localhost
+  gather_facts: false
+  vars:
+    dockerhub_user: "{{ lookup('env','DOCKERHUB_USER') }}"
+    image_tag: "{{ lookup('env','IMAGE_TAG') }}"
+    kubeconfig: "{{ lookup('env','KUBECONFIG') }}"
+  tasks:
+    - name: Ensure namespace
+      kubernetes.core.k8s:
+        state: present
+        definition: "{{ lookup('file', '../k8s/namespace.yaml') }}"
+        kubeconfig: "{{ kubeconfig }}"
+
+    - name: Apply web (inject image refs)
+      kubernetes.core.k8s:
+        state: present
+        definition: "{{ lookup('template', '../k8s/web-deploy.yaml') | replace('DOCKERHUB_USER', dockerhub_user) | replace('IMAGE_TAG', image_tag) }}"
+        kubeconfig: "{{ kubeconfig }}"
+
+    - name: Apply api (inject image refs)
+      kubernetes.core.k8s:
+        state: present
+        definition: "{{ lookup('template', '../k8s/api-deploy.yaml') | replace('DOCKERHUB_USER', dockerhub_user) | replace('IMAGE_TAG', image_tag) }}"
+        kubeconfig: "{{ kubeconfig }}"
+
+    - name: Apply worker (inject image refs)
+      kubernetes.core.k8s:
+        state: present
+        definition: "{{ lookup('template', '../k8s/worker-deploy.yaml') | replace('DOCKERHUB_USER', dockerhub_user) | replace('IMAGE_TAG', image_tag) }}"
+        kubeconfig: "{{ kubeconfig }}"
+
+    - name: List resources
+      ansible.builtin.command: kubectl -n micro get deploy,svc,pod -o wide
+      register: kres
+      changed_when: false
+
+    - debug: var=kres.stdout_lines

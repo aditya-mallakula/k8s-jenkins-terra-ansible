@@ -1,0 +1,11 @@
+version: "3.9"
+services:
+  api:
+    build: ./services/api
+    image: ${DOCKERHUB_USER}/api:${IMAGE_TAG}
+  web:
+    build: ./services/web
+    image: ${DOCKERHUB_USER}/web:${IMAGE_TAG}
+  worker:
+    build: ./services/worker
+    image: ${DOCKERHUB_USER}/worker:${IMAGE_TAG}
