@@ -39,3 +39,4 @@ terraform destroy -auto-approve -var="region=us-east-1" -var="cluster_name=micro
 - The Dockerfiles are placeholders; replace with your real app.
 - If DockerHub is private, add an imagePullSecret and reference it in the Deployments.
 - If node group creation fails due to capacity, try a different instance type or region.
+
