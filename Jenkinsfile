@@ -8,12 +8,12 @@ pipeline {
   }
 
   parameters {
-    string(name: 'IMAGE_TAG',   defaultValue: 'v1',        description: 'Docker image tag for this build')
-    string(name: 'AWS_REGION',  defaultValue: 'us-east-1', description: 'AWS region for EKS')
-    string(name: 'CLUSTER_NAME',defaultValue: 'micro-eks', description: 'EKS cluster name')
+    // Use "auto" for automatic immutable tags. You can still override manually if needed.
+    string(name: 'IMAGE_TAG', defaultValue: 'auto', description: 'Docker image tag (use "auto" for v$BUILD_NUMBER-$GIT_SHA)')
+    string(name: 'AWS_REGION', defaultValue: 'us-east-1', description: 'AWS region for EKS')
+    string(name: 'CLUSTER_NAME', defaultValue: 'micro-eks', description: 'EKS cluster name')
   }
 
-  // <-- put environment at top-level
   environment {
     K8S_NAMESPACE = 'micro'
     WEB_SERVICE   = 'web'
@@ -33,8 +33,24 @@ pipeline {
           echo "Docker:   $(docker version --format '{{.Server.Version}}' || echo not-installed)"
           echo "Terraform:$(terraform version | head -1 || echo not-installed)"
           echo "Ansible:  $(ansible --version | head -1 || echo not-installed)"
-          echo "Kubectl:  $(kubectl version --client | head -1 || echo not-installed)"
+          echo "Kubectl:  $(kubectl version --client || echo not-installed)"
           echo "AWS CLI:  $(aws --version 2>&1 | head -1 || echo not-installed)"
+        '''
+      }
+    }
+
+    // NEW: Make an immutable tag like v123-1a2b3c7
+    stage('Prepare build metadata') {
+      steps {
+        sh '''
+          set -e
+          GIT_SHA=$(git rev-parse --short=7 HEAD || echo unknown)
+          if [ -z "${IMAGE_TAG}" ] || [ "${IMAGE_TAG}" = "auto" ]; then
+            IMAGE_TAG="v${BUILD_NUMBER}-${GIT_SHA}"
+          fi
+          echo "GIT_SHA=$GIT_SHA"   | tee image.env
+          echo "IMAGE_TAG=$IMAGE_TAG" >> image.env
+          echo "Resolved IMAGE_TAG=$IMAGE_TAG (GIT_SHA=$GIT_SHA)"
         '''
       }
     }
@@ -43,25 +59,37 @@ pipeline {
       steps {
         withCredentials([usernamePassword(credentialsId: 'dockerhub-creds', usernameVariable: 'DH_USER', passwordVariable: 'DH_PASS')]) {
           sh '''
+            set -e
+            source image.env
             echo "$DH_PASS" | docker login -u "$DH_USER" --password-stdin
-            export DOCKERHUB_USER="$DH_USER"
-            export IMAGE_TAG="${IMAGE_TAG}"
 
+            export DOCKERHUB_USER="$DH_USER"
+            export IMAGE_TAG="$IMAGE_TAG"
+
+            # ensure amd64 images for your amd64 nodes
             export DOCKER_DEFAULT_PLATFORM=linux/amd64
             docker buildx create --use --name ci-builder || true
+
             docker compose -f docker-compose.ci.yml build --no-cache
           '''
         }
       }
     }
 
-    stage('CI - Push images') {
+    stage('CI - Push images (immutable & latest)') {
       steps {
         withCredentials([usernamePassword(credentialsId: 'dockerhub-creds', usernameVariable: 'DH_USER', passwordVariable: 'DH_PASS')]) {
           sh '''
+            set -e
+            source image.env
             echo "$DH_PASS" | docker login -u "$DH_USER" --password-stdin
+
             for img in api web worker; do
-              docker push "$DH_USER/$img:${IMAGE_TAG}"
+              # push immutable tag
+              docker push "$DH_USER/$img:$IMAGE_TAG"
+              # also tag & push :latest for convenience
+              docker tag  "$DH_USER/$img:$IMAGE_TAG" "$DH_USER/$img:latest"
+              docker push "$DH_USER/$img:latest"
             done
           '''
         }
@@ -102,37 +130,30 @@ pipeline {
           withAWS(credentials: 'aws-creds', region: "${params.AWS_REGION}") {
             sh '''
               set -e
+              source image.env
               export KUBECONFIG="$WORKSPACE/.kube/config"
               export DOCKERHUB_USER="$DH_USER"
-              export IMAGE_TAG="${IMAGE_TAG}"
+              export IMAGE_TAG="$IMAGE_TAG"
 
-              # Clean Python env for Ansible's k8s module
+              # Clean Python env for Ansible k8s module
               python3 -m venv "$WORKSPACE/.ansible-venv"
               . "$WORKSPACE/.ansible-venv/bin/activate"
               pip install --upgrade pip
               pip install kubernetes openshift requests
-
-              # Ensure Ansible k8s collection is present
               ansible-galaxy collection install kubernetes.core --force
-
-              # Quick sanity check
               python -c "import kubernetes, sys; print('kubernetes OK', sys.version)"
-
-              # Run playbook from ansible/ so relative paths work
               export ANSIBLE_PYTHON_INTERPRETER="$WORKSPACE/.ansible-venv/bin/python"
-              cd ansible
-              ansible-playbook -i inventory.ini deploy.yaml
-              cd -
 
-              # Show what got created
-              kubectl -n micro get deploy,svc,pod
+              cd ansible
+              ansible-playbook -i inventory.ini deploy.yaml \
+                -e dockerhub_user="$DOCKERHUB_USER" -e image_tag="$IMAGE_TAG"
+              cd -
             '''
           }
         }
       }
     }
 
-    // <-- keep Smoke test INSIDE stages
     stage('Smoke test & publish link') {
       steps {
         withAWS(credentials: 'aws-creds', region: "${params.AWS_REGION}") {
@@ -140,24 +161,18 @@ pipeline {
             set -euo pipefail
             export KUBECONFIG="$WORKSPACE/.kube/config"
 
-            # 1) Wait for rollouts
             for d in web api worker; do
               echo "Waiting for $d rollout..."
               kubectl -n "$K8S_NAMESPACE" rollout status deploy/$d --timeout=180s
             done
 
-            # 2) Discover ELB and test it
-            ELB=$(kubectl -n "$K8S_NAMESPACE" get svc "$WEB_SERVICE" \
-                  -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+            ELB=$(kubectl -n "$K8S_NAMESPACE" get svc "$WEB_SERVICE" -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
             echo "ELB=$ELB" | tee elb.env
 
             echo "Probing http://$ELB ..."
             for i in {1..20}; do
               code=$(curl -s -o /dev/null -w '%{http_code}' "http://$ELB" || true)
-              if [ "$code" = "200" ]; then
-                echo "OK (HTTP 200)"
-                break
-              fi
+              if [ "$code" = "200" ]; then echo "OK (HTTP 200)"; break; fi
               sleep 5
             done
 
@@ -168,18 +183,20 @@ pipeline {
       }
       post {
         always {
-          archiveArtifacts artifacts: 'web-response.txt, elb.env, k8s-summary.txt', allowEmptyArchive: true
+          archiveArtifacts artifacts: 'web-response.txt, elb.env, k8s-summary.txt, image.env', allowEmptyArchive: true
         }
         success {
           script {
             def elb = sh(script: "source elb.env && echo \$ELB", returnStdout: true).trim()
+            def tag = sh(script: "source image.env && echo \$IMAGE_TAG", returnStdout: true).trim()
+            currentBuild.displayName = "#${env.BUILD_NUMBER} ${tag}"
             currentBuild.description = "Web: http://${elb}"
             echo "Open your app: http://${elb}"
           }
         }
       }
     }
-  } // end stages
+  }
 
   post {
     always {
