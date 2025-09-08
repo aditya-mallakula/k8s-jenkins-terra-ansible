@@ -1,2 +1,3 @@
-FROM alpine:3.20
-CMD ["sh","-c","sleep 3600"]
+FROM nginx:1.27-alpine
+RUN printf 'hello from web\n' > /usr/share/nginx/html/index.html
+EXPOSE 80
