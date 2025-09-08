@@ -5,15 +5,39 @@ metadata:
   namespace: micro
 spec:
   replicas: 2
-  selector: { matchLabels: { app: web } }
+  selector:
+    matchLabels:
+      app: web
   template:
-    metadata: { labels: { app: web } }
+    metadata:
+      labels:
+        app: web
     spec:
       containers:
         - name: web
           image: DOCKERHUB_USER/web:IMAGE_TAG
+          imagePullPolicy: Always
           ports:
             - containerPort: 80
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 80
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 80
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
 ---
 apiVersion: v1
 kind: Service
@@ -22,7 +46,9 @@ metadata:
   namespace: micro
 spec:
   type: LoadBalancer
-  selector: { app: web }
+  selector:
+    app: web
   ports:
-    - port: 80
+    - name: http
+      port: 80
       targetPort: 80

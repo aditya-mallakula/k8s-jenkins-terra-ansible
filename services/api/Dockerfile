@@ -1,4 +1,5 @@
-FROM nginx:1.27-alpine
-RUN mkdir -p /usr/share/nginx/html && printf 'hello from api\n' > /usr/share/nginx/html/index.html
+FROM python:3.12-alpine
+WORKDIR /app
+COPY app.py .
 EXPOSE 8080
-CMD ["nginx","-g","daemon off;","-c","/etc/nginx/nginx.conf"]
+CMD ["python", "app.py"]
